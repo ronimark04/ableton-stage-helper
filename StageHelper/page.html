@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stage Helper</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0f1216;
+    --panel: #171b21;
+    --line: #2a323c;
+    --text: #e9edf2;
+    --muted: #98a3af;
+    --green: #3ccf8a;
+    --amber: #f2b33d;
+    --red: #ff6b6b;
+    --blue: #5aa5ff;
+    --loop-text: #c2b5ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 20px 16px 40px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  h1 { margin: 0; font-size: 20px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 12px; border-radius: 999px;
+    background: #20262e; font-size: 14px; font-weight: 700; white-space: nowrap;
+  }
+  .pill::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
+  .pill.on { color: var(--green); }
+  .pill.wait { color: var(--amber); }
+  .pill.off { color: var(--red); }
+  h2 {
+    margin: 24px 0 8px; font-size: 13px; font-weight: 800;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+  }
+  .list {
+    margin: 0; padding: 0; list-style: none;
+    border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden;
+  }
+  .list li { padding: 10px 14px; border-top: 1px solid var(--line); }
+  .list li:first-child { border-top: 0; }
+  .list .empty { color: var(--muted); }
+
+  #locators li { display: grid; grid-template-columns: 4.2em 1fr auto; gap: 12px; align-items: start; }
+  #locators li.empty { display: block; }
+  .kind {
+    justify-self: start; padding: 2px 7px; border-radius: 6px;
+    font-size: 12px; font-weight: 800; letter-spacing: .04em;
+  }
+  .kind.STOP { background: rgba(255, 107, 107, .15); color: var(--red); }
+  .kind.LOOP { background: rgba(123, 92, 255, .2); color: var(--loop-text); }
+  .kind.JUMP { background: rgba(90, 165, 255, .15); color: var(--blue); }
+  .loc-name { font-weight: 600; overflow-wrap: anywhere; }
+  .loc-does { color: var(--muted); font-size: 14px; }
+  .loc-problem { color: var(--amber); font-size: 14px; }
+  .loc-problem.bad { color: var(--red); }
+  .loc-bar { color: var(--muted); font-size: 14px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Stage Helper</h1>
+    <span id="connection" class="pill wait">Connecting…</span>
+  </header>
+
+  <h2>Stage Helper locators in the project</h2>
+  <ul id="locators" class="list"><li class="empty">Waiting for Live…</li></ul>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var QUIET_LIMIT = 6000; // ms without news from Live before we say so
+
+  var list = document.getElementById('locators');
+  var pill = document.getElementById('connection');
+  var streamOpen = false;
+  var lastHeard = 0;
+
+  function setConnection(kind) {
+    var looks = {
+      on: ['pill on', 'On'],
+      wait: ['pill wait', 'Connecting…'],
+      quiet: ['pill wait', 'Live not responding'],
+      off: ['pill off', 'Off – not connected']
+    }[kind];
+    pill.className = looks[0];
+    pill.textContent = looks[1];
+    pill.dataset.kind = kind;
+    document.title = 'Stage Helper' + (kind === 'on' ? '' : ' (' + looks[1] + ')');
+  }
+
+  setInterval(function () {
+    if (streamOpen && pill.dataset.kind === 'on' && Date.now() - lastHeard > QUIET_LIMIT) {
+      setConnection('quiet');
+    }
+  }, 1000);
+
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function showEmpty(text) {
+    list.textContent = '';
+    list.appendChild(el('li', 'empty', text));
+  }
+
+  function renderLocators(locators) {
+    if (!locators.length) {
+      showEmpty('No STOP, +LOOP or >>> locators in this Set.');
+      return;
+    }
+    list.textContent = '';
+    locators.forEach(function (locator) {
+      var item = el('li');
+      item.appendChild(el('span', 'kind ' + locator.kind, locator.kind));
+      var what = el('div');
+      what.appendChild(el('div', 'loc-name', locator.name));
+      if (locator.does) what.appendChild(el('div', 'loc-does', locator.does));
+      if (locator.problem) {
+        what.appendChild(el('div', 'loc-problem' + (locator.works ? '' : ' bad'),
+          (locator.works ? '' : 'Does nothing: ') + locator.problem));
+      }
+      item.appendChild(what);
+      item.appendChild(el('span', 'loc-bar', 'bar ' + locator.bar));
+      list.appendChild(item);
+    });
+  }
+
+  // Keeping this stream open is what keeps Stage Helper switched on.
+  function connect() {
+    var source = new EventSource('/events');
+    source.onopen = function () {
+      streamOpen = true;
+      lastHeard = Date.now();
+      setConnection('on');
+    };
+    source.onmessage = function (event) {
+      lastHeard = Date.now();
+      if (streamOpen && pill.dataset.kind !== 'on') setConnection('on');
+      var message;
+      try { message = JSON.parse(event.data); } catch (e) { return; }
+      if (message.type === 'state') renderLocators(message.locators);
+    };
+    source.onerror = function () {
+      streamOpen = false;
+      setConnection('off');
+      showEmpty('Waiting for Live…');
+      // The browser retries by itself, unless it gave up for good.
+      if (source.readyState === EventSource.CLOSED) {
+        source.close();
+        setTimeout(connect, 2000);
+      }
+    };
+  }
+
+  connect();
+})();
+</script>
+</body>
+</html>
