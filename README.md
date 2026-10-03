@@ -1,6 +1,6 @@
 # Ableton Stage Helper
 
-- Add +LOOP to locator name to loop until next locator
+- Add +LOOP to locator name to loop from it to next locator
 - Add >>> to locator name followed by name of a different locator to jump to that locator
 - Name a locator "STOP" to stop playback
 
