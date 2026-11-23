@@ -2,6 +2,7 @@
 
 - Add +LOOP to locator name to loop from it to next locator
 - Add >>> to locator name followed by name of a different locator to jump to that locator
+  (it can sit off the bar line, e.g. on beat 3: Global Quantization switches to a finer setting just for that jump, then back)
 - Name a locator STOP to stop playback
 
 ## Install

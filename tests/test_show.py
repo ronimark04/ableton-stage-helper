@@ -405,6 +405,59 @@ class JumpTests(unittest.TestCase):
         rig.run(rig.seconds(20))
         self.assertEqual(rig.song.kinds('jump'), [('jump', 16.0, 64.0)])
 
+    def test_off_bar_jump_borrows_a_finer_quantization_and_gives_it_back(self):
+        # (where, the setting borrowed): bar 5 beat 3, beat 2, an 1/8, a triplet, a 1/16
+        for at, borrowed in ((18.0, 5), (17.0, 7), (16.5, 9), (16 + 2.0 / 3, 8), (16.25, 11)):
+            rig = Rig([('A', 0), ('>>> B', at), ('B', 64)])
+            rig.play_from(0)
+            assert rig.run(rig.seconds(20), lambda: rig.song.pending is not None), at
+            self.assertEqual(rig.song.clip_trigger_quantization, borrowed, at)
+            state = rig.show.snapshot(rig.song)
+            self.assertEqual((state['quantization'], state['quantizationOk']), ('1 Bar', True), at)
+            rig.run(rig.seconds(4))
+            ((_, jumped_at, to),) = rig.song.kinds('jump')
+            self.assertAlmostEqual(jumped_at, at, places=9)
+            self.assertEqual(to, 64.0)
+            self.assertEqual(rig.song.clip_trigger_quantization, 4, at)
+            self.assertIn('Jumped to "B".', rig.texts())
+
+    def test_bar_line_jump_borrows_one_bar_from_two_bars(self):
+        rig = Rig([('A', 0), ('>>> B', 20), ('B', 64)], quantization=3)
+        rig.play_from(0)
+        rig.run(rig.seconds(24))
+        self.assertEqual(rig.song.kinds('jump'), [('jump', 20.0, 64.0)])
+        self.assertEqual(rig.song.clip_trigger_quantization, 3)
+
+    def test_jump_between_1_32_notes_happens_when_reached(self):
+        rig = Rig([('A', 0), ('>>> B', 16.1), ('B', 64)])
+        rig.play_from(0)
+        rig.run(rig.seconds(20))
+        ((_, jumped_at, to),) = rig.song.kinds('jump')
+        self.assertGreaterEqual(jumped_at, 16.1)
+        self.assertLess(jumped_at, 16.2)
+        self.assertEqual(to, 64.0)
+        self.assertEqual(rig.song.clip_trigger_quantization, 4)
+
+    def test_off_bar_jump_after_a_long_stall_comes_at_the_next_bar_line(self):
+        rig = Rig([('A', 0), ('>>> B', 18), ('B', 64)])
+        rig.play_from(0)
+        stall_start = rig.seconds(16.8)
+        rig.stalls.append((stall_start, stall_start + rig.seconds(1.5)))
+        rig.run(rig.seconds(24))
+        self.assertEqual(rig.song.kinds('jump'), [('jump', 20.0, 64.0)])
+        self.assertEqual(rig.song.clip_trigger_quantization, 4)
+        self.assertTrue(any('late' in t for t in rig.texts('warn')))
+
+    def test_changing_quantization_during_a_borrowed_jump_keeps_the_new_setting(self):
+        rig = Rig([('A', 0), ('>>> B', 18), ('B', 64)])
+        rig.play_from(0)
+        assert rig.run(rig.seconds(20), lambda: rig.song.pending is not None)
+        rig.song.clip_trigger_quantization = 9  # the user picks 1/8
+        rig.run(rig.seconds(4))
+        self.assertEqual(rig.song.kinds('jump'), [('jump', 18.0, 64.0)])
+        self.assertEqual(rig.song.clip_trigger_quantization, 9)
+        self.assertEqual(rig.show.snapshot(rig.song)['quantization'], '1/8')
+
     def test_duplicate_target_uses_the_first_and_warns(self):
         rig = Rig([('Song B', 0), ('>>> Song B', 16), ('Song B', 40)])
         rig.play_from(8)
@@ -470,6 +523,18 @@ class SwitchingOffTests(unittest.TestCase):
         self.assertTrue(all(to != 64.0 for _, _, to in rig.song.kinds('jump')))
         self.assertTrue(rig.song.is_playing)
         self.assertGreater(rig.song.engine_time, 20.0)
+
+    def test_closing_the_page_during_an_off_bar_jump_gives_quantization_back(self):
+        rig = Rig([('A', 0), ('>>> B', 18), ('B', 64)])
+        rig.play_from(0)
+        assert rig.run(rig.seconds(20), lambda: rig.song.pending is not None)
+        self.assertEqual(rig.song.clip_trigger_quantization, 5)
+        rig.show.deactivate(rig.song, 'browser page closed')
+        self.assertEqual(rig.song.clip_trigger_quantization, 4)
+        rig.run(rig.seconds(8))
+        self.assertTrue(all(to != 64.0 for _, _, to in rig.song.kinds('jump')))
+        self.assertTrue(rig.song.is_playing)
+        self.assertGreater(rig.song.engine_time, 22.0)
 
     def test_while_off_nothing_happens(self):
         rig = Rig([('Vamp +LOOP', 0), ('STOP', 8), ('>>> B', 12), ('B', 40)], activate=False)

@@ -14,6 +14,9 @@ imports Live, so it can be tested against a simulated song (see tests/).
 Wherever it can, it leaves the timing to Live's audio engine:
   * a jump is requested most of a bar early with CuePoint.jump(). Live holds it
     until the next bar line (Global Quantization), which is the >>> locator.
+    A >>> locator off the bar line (bar 17.3) borrows a finer Global
+    Quantization (1/2 there) just for the jump, and puts it back once Live has
+    jumped.
   * a loop is the same thing: near the end of each pass we request a jump back
     to the +LOOP locator. Live's own Loop switch and loop brace are never used.
   * only STOP depends on how quickly we see the playhead pass the locator.
@@ -30,9 +33,14 @@ QUANTIZATION_NAMES = ('None', '8 Bars', '4 Bars', '2 Bars', '1 Bar', '1/2', '1/2
                       '1/4', '1/4T', '1/8', '1/8T', '1/16', '1/16T', '1/32')
 NO_QUANTIZATION = 0
 ONE_BAR = 4
+# The bar settings (8/4/2/1 Bars): how many bars one step is.
+BAR_STEPS = {1: 8, 2: 4, 3: 2, 4: 1}
 # The note-value settings: length of one step in beats.
 NOTE_STEPS = {5: 2.0, 6: 4.0 / 3, 7: 1.0, 8: 2.0 / 3, 9: 0.5, 10: 1.0 / 3,
               11: 0.25, 12: 1.0 / 6, 13: 0.125}
+# What a jump off Live's grid may borrow, coarsest first (1 Bar, 1/2, 1/2T ...).
+BORROWABLE = (ONE_BAR, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+ON_GRID = 1e-3       # beats: a locator this close to a step counts as on it
 
 EPS = 1e-6           # beats: positions closer than this count as the same
 MISSED_JUMP = 0.1    # beats past a requested jump before we call it missed
@@ -141,6 +149,11 @@ class _PendingJump(object):
         self.is_loop = is_loop        # a loop's jump back to its start
 
 
+def on_grid(time, step):
+    """Is this song position on a step of this length (counted from the start)?"""
+    return abs(time - round(time / step) * step) < ON_GRID
+
+
 class ShowController(object):
     """All of Stage Helper's behaviour.
 
@@ -162,7 +175,8 @@ class ShowController(object):
         self._next_refresh = 0.0
         self._bar = 4.0
         self._beat = 1.0
-        self._quantization = ONE_BAR
+        self._quantization = ONE_BAR  # the user's Global Quantization
+        self._borrowed = None   # the setting we put in its place for a jump
         self._was_playing = False
         self._prev = None       # (song time, clock) at the previous tick
         self._loop = None       # _Loop while repeating a +LOOP section
@@ -183,6 +197,7 @@ class ShowController(object):
         """Give Live back as if we had never been there. Never stops playback."""
         try:
             self._cancel_pending_jump(song)
+            self._give_back_quantization(song)
         finally:
             self.active = False
             self._clear()
@@ -234,7 +249,12 @@ class ShowController(object):
             self._song_id = song_identity(song)
         if now >= self._next_refresh:
             self._refresh(song, now)
+        self._play(song, now)
+        if self._pending is None:
+            # The jump that borrowed a finer quantization is done (or gone).
+            self._give_back_quantization(song)
 
+    def _play(self, song, now):
         if not song.is_playing:
             if self._was_playing:
                 self._was_playing = False
@@ -261,7 +281,13 @@ class ShowController(object):
         denominator = song.signature_denominator
         self._beat = 4.0 / denominator
         self._bar = song.signature_numerator * self._beat
-        self._quantization = int(song.clip_trigger_quantization)
+        quantization = int(song.clip_trigger_quantization)
+        if self._borrowed is not None:
+            if quantization == self._borrowed:
+                quantization = self._quantization  # still ours: the user's is unchanged
+            else:
+                self._borrowed = None  # the user changed it meanwhile: theirs stays
+        self._quantization = quantization
         self._locators = read_locators(song)
         self._stops = [l for l in self._locators if l.kind == 'STOP']
         self._loops = [l for l in self._locators if l.kind == 'LOOP' and l.end is not None]
@@ -302,19 +328,41 @@ class ShowController(object):
 
     # Jumps --------------------------------------------------------------------
 
-    def _jump_lead(self, early=False):
+    def _step(self, quantization):
+        """Length in beats of one step of a Global Quantization setting."""
+        if quantization in BAR_STEPS:
+            return self._bar * BAR_STEPS[quantization]
+        return NOTE_STEPS.get(quantization)  # None for no quantization
+
+    def _setting_for(self, time):
+        """The Global Quantization that has Live jump exactly at `time`: the
+        user's when `time` is on its grid, else the coarsest one it is on."""
+        step = self._step(self._quantization)
+        if step is None or on_grid(time, step):
+            return self._quantization
+        for setting in BORROWABLE:
+            step = self._step(setting)
+            # Only steps that fit a bar exactly, so that every bar line is a step.
+            if on_grid(self._bar, step) and on_grid(time, step):
+                return setting
+        return NO_QUANTIZATION  # between 1/32 notes: jump when we get there
+
+    def _jump_lead(self, early=False, quantization=None):
         """How many beats before a jump point to ask Live for the jump.
 
         Live performs a requested jump at the next Global Quantization step.
         Asking within the last step before the jump point makes that step the
         jump point itself. None means no quantization: jump when we get there.
+        quantization: a setting to borrow instead of the user's.
 
         A loop asks early in its last bar (early=True). Live keeps only one
         pending jump, so pressing ] after that replaces the jump back.
         """
-        if self._quantization == NO_QUANTIZATION:
+        if quantization is None:
+            quantization = self._quantization
+        if quantization == NO_QUANTIZATION:
             return None
-        step = NOTE_STEPS.get(self._quantization)
+        step = NOTE_STEPS.get(quantization)
         if step is None:
             # 1 Bar (and 2/4/8 Bars, where asking in the last bar is never early).
             return self._bar - (LOOP_MARGIN if early else min(1.0, self._bar / 4.0))
@@ -326,11 +374,11 @@ class ShowController(object):
             if natural and t >= pending.time + MISSED_JUMP:
                 # Live played on through the jump point without jumping.
                 self._pending = None
+                self._give_back_quantization(song)
                 if not pending.is_loop:  # (a missed loop is handled in _update_loop)
                     self._late_jump(pending.target_cue, pending.target_name)
             return
 
-        lead = self._jump_lead()
         for jump in self._jumps:
             if natural and prev_t < jump.time - EPS and t >= jump.time - EPS \
                     and not self._wraps_before(song, prev_t, jump.time):
@@ -339,14 +387,17 @@ class ShowController(object):
                 if jump.target is None:
                     self._notify('Jump at bar %s did nothing: %s.' % (
                         self.bar_label(jump.time), jump.problem), 'warn')
-                elif lead is None:
+                elif self._quantization == NO_QUANTIZATION:
                     jump.target.cue.jump()
                     self._notify('Jumped to "%s".' % jump.target.name, 'info')
+                elif self._setting_for(jump.time) == NO_QUANTIZATION:
+                    # Off every grid Live has: borrow no quantization, jump now.
+                    self._request_jump(song, jump, NO_QUANTIZATION)
                 else:
                     self._late_jump(jump.target.cue, jump.target.name)
                 return
 
-        if lead is None:
+        if self._quantization == NO_QUANTIZATION:
             return
         loop = self._loop
         if loop is not None:
@@ -358,12 +409,30 @@ class ShowController(object):
                                              loop.start, loop.label, is_loop=True)
             return
         for jump in self._jumps:
-            if jump.target is not None and jump.time - lead <= t < jump.time - EPS \
+            if jump.target is None:
+                continue
+            setting = self._setting_for(jump.time)
+            lead = self._jump_lead(quantization=setting)
+            if lead is not None and jump.time - lead <= t < jump.time - EPS \
                     and not self._wraps_before(song, t, jump.time):
-                jump.target.cue.jump()
-                self._pending = _PendingJump(jump.cue, jump.time, jump.target.cue,
-                                             jump.target.time, jump.target.name)
+                self._request_jump(song, jump, setting)
                 return
+
+    def _request_jump(self, song, jump, setting):
+        """Ask Live for a >>> jump, first borrowing `setting` as Global
+        Quantization if it isn't the user's. tick() gives it back once the
+        jump is no longer pending."""
+        if setting != self._quantization:
+            self._borrowed = setting
+            song.clip_trigger_quantization = setting
+        jump.target.cue.jump()
+        self._pending = _PendingJump(jump.cue, jump.time, jump.target.cue,
+                                     jump.target.time, jump.target.name)
+
+    def _give_back_quantization(self, song):
+        borrowed, self._borrowed = self._borrowed, None
+        if borrowed is not None and int(song.clip_trigger_quantization) == borrowed:
+            song.clip_trigger_quantization = self._quantization
 
     def _late_jump(self, target_cue, target_name):
         target_cue.jump()
