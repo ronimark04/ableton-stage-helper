@@ -2,13 +2,12 @@
 
 - Add +LOOP to locator name to loop from it to next locator
 - Add >>> to locator name followed by name of a different locator to jump to that locator
-  (it can sit off the bar line, e.g. on beat 3: Global Quantization switches to a finer setting just for that jump, then back)
 - Name a locator STOP to stop playback
 
 ## Install
 
 1. Quit Live.
-2. Copy the `StageHelper` folder (the one with `__init__.py` inside) into
+2. Copy the `StageHelper` folder into
    `Documents\Ableton\User Library\Remote Scripts\`.
    If there's no `Remote Scripts` folder there yet, create it.
 
@@ -24,14 +23,12 @@
 ## Use it
 
 1. Open your Set in Live.
-2. Double-click **Start Stage Helper.cmd** (in the main folder of this
-   repository). It waits until Live has loaded Stage Helper, then opens
+2. Open **Start Stage Helper.cmd**. It waits until Live has loaded Stage Helper, then opens
    **http://localhost:8517** in your browser. You can do steps 1 and 2 in
-   either order. Tip: right-click it → *Send to* → *Desktop (create shortcut)*.
+   either order.
 3. When the pill at the top says **On**, Stage Helper is working. The page
    lists the locators it reacts to; anything in red won't work.
-4. Keep that page open while you play. Closing it switches Stage Helper off,
-   and Live then plays straight through every locator.
+4. Keep that page open while you play. Closing it switches Stage Helper off.
 5. To leave a loop, press next locator in Live.
 
 ## If it doesn't connect
